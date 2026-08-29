@@ -1,0 +1,161 @@
+import speech_recognition as sr
+import webbrowser
+import os
+import datetime
+import pyttsx3
+import numpy as np
+import sounddevice as sd
+import requests
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+import pywhatkit
+from deep_translator import GoogleTranslator
+import time
+
+# Initialize recognizer and voice engine
+recognizer = sr.Recognizer()
+recognizer.energy_threshold = 4000
+engine = pyttsx3.init('sapi5')
+voices = engine.getProperty('voices')
+engine.setProperty('voice', voices[0].id)
+engine.setProperty('rate', 130)
+
+# Define wake words and clap detection settings
+WAKE_WORDS = ["hey assistant", "wake up", "hello"]
+CLAP_THRESHOLD = 2000  # Adjust based on noise level
+assistant_awake = False  # Assistant starts in sleep mode
+
+# API keys (replace with your own)
+NEWS_API_KEY = "5879e823b2c14743b48c23b6ec39b3ad"
+
+def speak(audio):
+    print(audio)  # Debugging: Print what should be spoken
+    engine.say(audio)
+    engine.runAndWait()
+    time.sleep(2)
+
+def recognize_speech():
+    with sr.Microphone() as source:
+        print("Listening...")
+        recognizer.adjust_for_ambient_noise(source, duration=1)
+        audio = recognizer.listen(source)
+    try:
+        print("Recognizing...")
+        command = recognizer.recognize_google(audio)
+        print("You said:", command)
+        return command.lower()
+    except sr.UnknownValueError:
+        return ""
+    except sr.RequestError:
+        return ""
+
+def detect_clap():
+    print("Listening for a clap...")
+    duration = 2
+    sample_rate = 44100
+    recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='int16')
+    sd.wait()
+    volume_norm = np.linalg.norm(recording)
+    return volume_norm > CLAP_THRESHOLD
+
+def listen_for_wake_word():
+    command = recognize_speech()
+    return any(wake_word in command for wake_word in WAKE_WORDS)
+
+def wake_up_system():
+    global assistant_awake
+    while True:
+        if listen_for_wake_word() or detect_clap():
+            print("Assistant Activated!")
+            assistant_awake = True
+            speak("I am now awake. How can I help you?")
+            main()
+
+def respond_to_go_to_sleep():
+    global assistant_awake
+    speak("Going to sleep. Say 'wake up' or clap to reactivate.")
+    assistant_awake = False
+    wake_up_system()
+
+def get_weather():
+    latitude, longitude = 21.2472165498076, 72.85082070073345 # Example: New York
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={latitude}&longitude={longitude}&current_weather=true"
+    
+    response = requests.get(url)
+    data = response.json()
+
+    if "current_weather" in data:
+        temp = data["current_weather"]["temperature"]
+        wind_speed = data["current_weather"]["windspeed"]
+        speak(f"The current temperature is {temp} degrees Celsius with a wind speed of {wind_speed} kilometers per hour.")
+    else:
+        speak("Sorry, I couldn't fetch the weather data.")
+
+def get_news():
+    url = f"https://newsapi.org/v2/top-headlines?country=us&apiKey={NEWS_API_KEY}"
+    response = requests.get(url).json()
+    
+    if response["status"] != "ok":
+        speak("Sorry, I couldn't fetch the latest news.")
+        return
+    
+    articles = response["articles"][:5]  # Get top 5 headlines
+    speak("Here are today's top news headlines.")
+
+    for index, article in enumerate(articles, start=1):
+        news_title = article.get("title", "No title available")
+        speak(f"News {index}: {news_title}")
+
+def google_search(query):
+    query = query.replace("search in google", "")
+    webbrowser.open(f"https://www.google.com/search?q={query}")
+
+def song_youtube(query):
+    query = query.replace("search in youtube", "")
+    webbrowser.open(f'https://www.youtube.com/results?search_query={query}')
+
+def play_song(action):
+    if 'play' in action:
+        song = action.replace('play', '')
+        speak(f'Playing {song}')
+        pywhatkit.playonyt(song)
+
+def adjust_volume(action):
+    if "set volume to" in action:
+        try:
+            volume_level = int(action.split("set volume to ")[1])
+            if 0 <= volume_level <= 100:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                volume.SetMasterVolumeLevelScalar(volume_level / 100, None)
+                speak(f"Volume set to {volume_level}")
+        except ValueError:
+            speak("Invalid volume level. Please specify a valid number.")
+
+def main():
+    global assistant_awake
+    while assistant_awake:
+        command = recognize_speech()
+
+        if "go to sleep" in command:
+            respond_to_go_to_sleep()
+        elif "search in google" in command:
+            google_search(command)
+        elif "search in youtube" in command:
+            song_youtube(command)
+        elif "play" in command:
+            play_song(command)
+        elif "volume" in command:
+            adjust_volume(command)
+        elif "what's the weather" in command or "weather update" in command:
+            get_weather()
+        elif "news" in command:
+            get_news()
+        elif command.lower() == "exit":
+            print("Exiting program...")
+            break
+
+if __name__ == "__main__":
+    wake_up_system()
